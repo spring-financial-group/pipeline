@@ -25,12 +25,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/cloud"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 
 	"github.com/go-jose/go-jose/v3"
@@ -74,6 +76,7 @@ const (
 	// ReferenceScheme schemes for various KMS services are copied from https://github.com/google/go-cloud/tree/master/secrets
 	ReferenceScheme = "azurekms://"
 	cacheKey        = "azure_vault_signer"
+	azureClientID   = "AZURE_CLIENT_ID"
 )
 
 // ValidReference returns a non-nil error if the reference string is invalid
@@ -121,6 +124,7 @@ func newAzureKMS(keyResourceID string) (*azureVaultClient, error) {
 
 	azClient := &azureVaultClient{
 		client:     client,
+		vaultURL:   vaultURL,
 		keyName:    keyName,
 		keyVersion: keyVersion,
 		keyCache: ttlcache.New[string, crypto.PublicKey](
@@ -169,6 +173,20 @@ type azureCredential interface {
 	GetToken(ctx context.Context, opts policy.TokenRequestOptions) (azcore.AccessToken, error)
 }
 
+func getAzClientOpts() azcore.ClientOptions {
+	envName := os.Getenv("AZURE_ENVIRONMENT")
+	switch envName {
+	case "AZUREUSGOVERNMENT", "AZUREUSGOVERNMENTCLOUD":
+		return azcore.ClientOptions{Cloud: cloud.AzureGovernment}
+	case "AZURECHINACLOUD":
+		return azcore.ClientOptions{Cloud: cloud.AzureChina}
+	case "AZURECLOUD", "AZUREPUBLICCLOUD":
+		return azcore.ClientOptions{Cloud: cloud.AzurePublic}
+	default:
+		return azcore.ClientOptions{Cloud: cloud.AzurePublic}
+	}
+}
+
 // getAzureCredential takes an authenticationMethod and returns an Azure credential or an error.
 // If the method is unknown, Environment will be tested and if it returns an error CLI will be tested.
 // If the method is specified, the specified method will be used and no other will be tested.
@@ -179,13 +197,25 @@ type azureCredential interface {
 // 4. MSI (FromEnvironment)
 // 5. CLI (FromCLI)
 func getAzureCredential(method authenticationMethod) (azureCredential, error) {
+	clientOpts := getAzClientOpts()
+
 	switch method {
 	case environmentAuthenticationMethod:
-		cred, err := azidentity.NewEnvironmentCredential(nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create default azure credential from env auth method: %w", err)
+		envCred, err := azidentity.NewEnvironmentCredential(&azidentity.EnvironmentCredentialOptions{ClientOptions: clientOpts})
+		if err == nil {
+			return envCred, nil
 		}
-		return cred, nil
+
+		o := &azidentity.ManagedIdentityCredentialOptions{ClientOptions: clientOpts}
+		if ID, ok := os.LookupEnv(azureClientID); ok {
+			o.ID = azidentity.ClientID(ID)
+		}
+		msiCred, err := azidentity.NewManagedIdentityCredential(o)
+		if err == nil {
+			return msiCred, nil
+		}
+
+		return nil, fmt.Errorf("failed to create default azure credential from env auth method: %w", err)
 	case cliAuthenticationMethod:
 		cred, err := azidentity.NewAzureCLICredential(nil)
 		if err != nil {
@@ -198,7 +228,7 @@ func getAzureCredential(method authenticationMethod) (azureCredential, error) {
 		return nil, fmt.Errorf("you should never reach this")
 	}
 
-	envCreds, err := azidentity.NewEnvironmentCredential(nil)
+	envCreds, err := azidentity.NewEnvironmentCredential(&azidentity.EnvironmentCredentialOptions{ClientOptions: clientOpts})
 	if err == nil {
 		return envCreds, nil
 	}
@@ -290,11 +320,32 @@ func (a *azureVaultClient) public(ctx context.Context) (crypto.PublicKey, error)
 }
 
 func (a *azureVaultClient) createKey(ctx context.Context) (crypto.PublicKey, error) {
+	// check if the key already exists by attempting to fetch it
 	_, err := a.getKey(ctx)
+	// if the error is nil, this means the key already exists
+	// and we can return the public key
 	if err == nil {
 		return a.public(ctx)
 	}
 
+	// If the returned error is not nil, set the error to the
+	// custom azcore.ResponseError error implementation
+	// this custom error allows us to check the status code
+	// returned by the GetKey operation. If the operation
+	// returned a 404, we know that the key does not exist
+	// and we can create it.
+	var respErr *azcore.ResponseError
+	if ok := errors.As(err, &respErr); !ok {
+		return nil, fmt.Errorf("unexpected error returned by get key operation: %w", err)
+	}
+
+	// if a non-404 status code is returned, return the error
+	// since this is an unexpected error response
+	if respErr.StatusCode != http.StatusNotFound {
+		return nil, fmt.Errorf("unexpected status code returned by get key operation: %w", err)
+	}
+
+	// if a 404 was returned, then we can create the key
 	_, err = a.client.CreateKey(
 		ctx,
 		a.keyName,
@@ -343,7 +394,7 @@ func (a *azureVaultClient) getKeyVaultHashFunc(ctx context.Context) (crypto.Hash
 		case 384:
 			return crypto.SHA384, azkeys.SignatureAlgorithmRS384, nil
 		case 512:
-			return crypto.SHA512, azkeys.SignatureAlgorithmRS384, nil
+			return crypto.SHA512, azkeys.SignatureAlgorithmRS512, nil
 		default:
 			return 0, "", fmt.Errorf("unsupported key size: %d", keyImpl.Size())
 		}
