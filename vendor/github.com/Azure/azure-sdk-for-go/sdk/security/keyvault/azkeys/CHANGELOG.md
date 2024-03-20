@@ -1,5 +1,37 @@
 # Release History
 
+## 1.1.0 (2024-02-13)
+
+### Other Changes
+* Upgraded to API service version `7.5`
+* Upgraded dependencies
+
+## 1.1.0-beta.2 (2023-11-08)
+
+### Features Added
+* Added the `HSMPlatform` field to the `KeyAttributes` struct
+
+### Other Changes
+* Upgraded service version to `7.5-preview.1`
+* Updated to latest version of `azcore`.
+* Fixed value of `otel.library.name` in traces.
+
+## 1.1.0-beta.1 (2023-10-11)
+
+### Features Added
+
+* Enabled spans for distributed tracing.
+
+## 1.0.1 (2023-08-23)
+
+### Other Changes
+* Upgraded dependencies
+
+## 1.0.0 (2023-07-17)
+
+### Features Added
+* first stable release of `azkeys` module
+
 ## 0.12.0 (2023-06-08)
 
 ### Breaking Changes
