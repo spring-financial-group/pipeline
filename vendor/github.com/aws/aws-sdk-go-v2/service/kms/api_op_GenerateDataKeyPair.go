@@ -4,8 +4,8 @@ package kms
 
 import (
 	"context"
+	"fmt"
 	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
-	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/service/kms/types"
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
@@ -16,7 +16,7 @@ import (
 // the private key that is encrypted under the symmetric encryption KMS key you
 // specify. You can use the data key pair to perform asymmetric cryptography and
 // implement digital signatures outside of KMS. The bytes in the keys are random;
-// they not related to the caller or to the KMS key that is used to encrypt the
+// they are not related to the caller or to the KMS key that is used to encrypt the
 // private key. You can use the public key that GenerateDataKeyPair returns to
 // encrypt data or verify a signature outside of KMS. Then, store the encrypted
 // private key with the data. When you are ready to decrypt data or sign a message,
@@ -74,6 +74,10 @@ import (
 //   - GenerateDataKey
 //   - GenerateDataKeyPairWithoutPlaintext
 //   - GenerateDataKeyWithoutPlaintext
+//
+// Eventual consistency: The KMS API follows an eventual consistency model. For
+// more information, see KMS eventual consistency (https://docs.aws.amazon.com/kms/latest/developerguide/programming-eventual-consistency.html)
+// .
 func (c *Client) GenerateDataKeyPair(ctx context.Context, params *GenerateDataKeyPairInput, optFns ...func(*Options)) (*GenerateDataKeyPairOutput, error) {
 	if params == nil {
 		params = &GenerateDataKeyPairInput{}
@@ -117,6 +121,11 @@ type GenerateDataKeyPairInput struct {
 	//
 	// This member is required.
 	KeyPairSpec types.DataKeyPairSpec
+
+	// Checks if your request will succeed. DryRun is an optional parameter. To learn
+	// more about how to use this parameter, see Testing your KMS API calls (https://docs.aws.amazon.com/kms/latest/developerguide/programming-dryrun.html)
+	// in the Key Management Service Developer Guide.
+	DryRun *bool
 
 	// Specifies the encryption context that will be used when encrypting the private
 	// key in the data key pair. Do not include confidential or sensitive information
@@ -201,6 +210,9 @@ type GenerateDataKeyPairOutput struct {
 }
 
 func (c *Client) addOperationGenerateDataKeyPairMiddlewares(stack *middleware.Stack, options Options) (err error) {
+	if err := stack.Serialize.Add(&setOperationInputMiddleware{}, middleware.After); err != nil {
+		return err
+	}
 	err = stack.Serialize.Add(&awsAwsjson11_serializeOpGenerateDataKeyPair{}, middleware.After)
 	if err != nil {
 		return err
@@ -209,34 +221,38 @@ func (c *Client) addOperationGenerateDataKeyPairMiddlewares(stack *middleware.St
 	if err != nil {
 		return err
 	}
+	if err := addProtocolFinalizerMiddlewares(stack, options, "GenerateDataKeyPair"); err != nil {
+		return fmt.Errorf("add protocol finalizers: %v", err)
+	}
+
+	if err = addlegacyEndpointContextSetter(stack, options); err != nil {
+		return err
+	}
 	if err = addSetLoggerMiddleware(stack, options); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddClientRequestIDMiddleware(stack); err != nil {
+	if err = addClientRequestID(stack); err != nil {
 		return err
 	}
-	if err = smithyhttp.AddComputeContentLengthMiddleware(stack); err != nil {
+	if err = addComputeContentLength(stack); err != nil {
 		return err
 	}
 	if err = addResolveEndpointMiddleware(stack, options); err != nil {
 		return err
 	}
-	if err = v4.AddComputePayloadSHA256Middleware(stack); err != nil {
+	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetryMiddlewares(stack, options); err != nil {
+	if err = addRetry(stack, options); err != nil {
 		return err
 	}
-	if err = addHTTPSignerV4Middleware(stack, options); err != nil {
+	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddRawResponseToMetadata(stack); err != nil {
+	if err = addRecordResponseTiming(stack); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddRecordResponseTiming(stack); err != nil {
-		return err
-	}
-	if err = addClientUserAgent(stack); err != nil {
+	if err = addClientUserAgent(stack, options); err != nil {
 		return err
 	}
 	if err = smithyhttp.AddErrorCloseResponseBodyMiddleware(stack); err != nil {
@@ -245,13 +261,16 @@ func (c *Client) addOperationGenerateDataKeyPairMiddlewares(stack *middleware.St
 	if err = smithyhttp.AddCloseResponseBodyMiddleware(stack); err != nil {
 		return err
 	}
+	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
 	if err = addOpGenerateDataKeyPairValidationMiddleware(stack); err != nil {
 		return err
 	}
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opGenerateDataKeyPair(options.Region), middleware.Before); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddRecursionDetection(stack); err != nil {
+	if err = addRecursionDetection(stack); err != nil {
 		return err
 	}
 	if err = addRequestIDRetrieverMiddleware(stack); err != nil {
@@ -263,6 +282,9 @@ func (c *Client) addOperationGenerateDataKeyPairMiddlewares(stack *middleware.St
 	if err = addRequestResponseLogging(stack, options); err != nil {
 		return err
 	}
+	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -270,7 +292,6 @@ func newServiceMetadataMiddleware_opGenerateDataKeyPair(region string) *awsmiddl
 	return &awsmiddleware.RegisterServiceMetadata{
 		Region:        region,
 		ServiceID:     ServiceID,
-		SigningName:   "kms",
 		OperationName: "GenerateDataKeyPair",
 	}
 }
